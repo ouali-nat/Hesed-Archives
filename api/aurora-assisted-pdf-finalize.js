@@ -318,6 +318,7 @@ module.exports = async function handler(req, res) {
       signal: AbortSignal.timeout(90000),
       headers: {
         "Content-Type": "application/pdf",
+        "Authorization": "Bearer " + token,
         "Cache-Control": "max-age=3600",
         "x-upsert": "true",
       },
