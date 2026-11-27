@@ -1,6 +1,34 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { PDFDocument } from "npm:pdf-lib@1.17.1";
+
+const R2_WORKER_URL = "https://lsnb-pdf-worker-v2.oualikevin9.workers.dev";
+const R2_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
+const R2_SERVICE_TOKEN = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || (() => { try { return JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}").default || ""; } catch { return ""; } })();
+function r2KeyUrl(path: string) { return R2_WORKER_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+function r2PublicUrl(path: string) { return R2_PUBLIC_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+const r2Storage = {
+  from(_bucket: string) {
+    return {
+      async upload(path: string, body: BodyInit, options: any = {}) {
+        try {
+          if (!R2_SERVICE_TOKEN) return { data: null, error: { message: "Jeton serveur R2 indisponible." } };
+          const response = await fetch(r2KeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+          if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
+          return { data: { path }, error: null };
+        } catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async download(path: string) {
+        try { const response = await fetch(r2KeyUrl(path)); if (!response.ok) return { data: null, error: { message: "R2 download HTTP " + response.status } }; return { data: await response.blob(), error: null }; }
+        catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async createSignedUrl(path: string, _expiresIn?: number) { return { data: { signedUrl: r2PublicUrl(path) }, error: null }; },
+      async createSignedUrls(paths: string[], _expiresIn?: number) { return { data: { signedUrls: paths.map(path => ({ path, signedUrl: r2PublicUrl(path) })) }, error: null }; },
+      async createSignedUploadUrl(path: string) { return { data: { signedUrl: r2KeyUrl(path), token: null, path }, error: null }; },
+      getPublicUrl(path: string) { return { data: { publicUrl: r2PublicUrl(path) } }; }
+    };
+  }
+};
 const SUPA_URL=Deno.env.get("SUPABASE_URL")!,SR=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,ANON=Deno.env.get("SUPABASE_ANON_KEY")!;
 const admin=createClient(SUPA_URL,SR,{auth:{autoRefreshToken:false,persistSession:false}});
 const C={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type","Access-Control-Allow-Methods":"POST, OPTIONS"};
@@ -30,7 +58,7 @@ Deno.serve(async req=>{
   const asset_bytes:any={font_source_bytes:0,logo_source_bytes:0,formula_png_source_bytes:0,formula_vector_pdf_source_bytes:0,image_source_bytes:0,geogebra_source_bytes:0,total_source_bytes:0};
   const merged=await PDFDocument.create();
   for(let i=0;i<paths.length;i++){
-   const {data,error}=await admin.storage.from("Pdfs").download(paths[i]);
+   const {data,error}=await r2Storage.from("Pdfs").download(paths[i]);
    if(error||!data)throw Error(`Page ${i+1} introuvable: ${error?.message||"fichier absent"}`);
    const sourceBytes=new Uint8Array(await data.arrayBuffer());fragment_bytes_total+=sourceBytes.length;
    const source=await PDFDocument.load(sourceBytes);merged_page_count+=source.getPageCount();
@@ -42,8 +70,8 @@ Deno.serve(async req=>{
   }
   const out=new Uint8Array(await merged.save({useObjectStreams:true}));
   const expectedFinalPath=`aurora-content-generated/${uid}/${id}.pdf`;const finalPath=String(b?.pdf_path||expectedFinalPath);if(finalPath!==expectedFinalPath)return json({ok:false,error:"Chemin PDF non autorisé"},403);if(out.length>40*1024*1024)return json({ok:false,error:"PDF trop volumineux (maximum 40 Mo)"},413);
-  const up=await admin.storage.from("Pdfs").upload(finalPath,out,{contentType:"application/pdf",upsert:true});if(up.error)throw Error("Sauvegarde PDF: "+up.error.message);
-  const {data:signed,error:se}=await admin.storage.from("Pdfs").createSignedUrl(finalPath,60*60*24*30);
+  const up=await r2Storage.from("Pdfs").upload(finalPath,out,{contentType:"application/pdf",upsert:true});if(up.error)throw Error("Sauvegarde PDF: "+up.error.message);
+  const {data:signed,error:se}=await r2Storage.from("Pdfs").createSignedUrl(finalPath,60*60*24*30);
   if(se)throw Error("URL PDF: "+se.message);
   const within_4_mib=out.length<=4*1024*1024;
   const meta={engine:"pdf-lib+page-by-page-v4-vector-math",pages:merged_page_count,fragments:paths.length,bytes:out.length,size_mib:Number((out.length/1048576).toFixed(2)),fragment_bytes:fragment_bytes_total,asset_bytes,asset_metrics_fragments,asset_metrics_complete:asset_metrics_fragments===paths.length,target_max_bytes:4*1024*1024,within_4_mib,generated_at:new Date().toISOString()};
