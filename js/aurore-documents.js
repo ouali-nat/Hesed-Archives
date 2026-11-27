@@ -304,8 +304,10 @@
       let derniereErreur = null;
       for (const candidate of [...new Set(sources)]) {
         try {
+          const headersPrives = doc?.privateDocumentId ? { Authorization: 'Bearer ' + String(session?.access_token || ''), apikey: SUPABASE_ANON_KEY } : undefined;
           const task = pdfjsLib.getDocument({
             url: candidate,
+            httpHeaders: headersPrives,
             rangeChunkSize: 256 * 1024,
             disableAutoFetch: true,
             disableRange: false,
