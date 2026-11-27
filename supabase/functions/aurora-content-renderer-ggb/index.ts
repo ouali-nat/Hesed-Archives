@@ -3,6 +3,34 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { PDFDocument, PDFImage, rgb } from "npm:pdf-lib@1.17.1";
 import fontkit from "npm:@pdf-lib/fontkit@1.1.1";
 
+
+const R2_STORAGE_WORKER_URL = "https://lsnb-pdf-worker-v2.oualikevin9.workers.dev";
+const R2_STORAGE_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
+const R2_STORAGE_SERVICE_TOKEN = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || (() => { try { return JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}").default || ""; } catch { return ""; } })();
+function r2StorageKeyUrl(path: string) { return R2_STORAGE_WORKER_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+function r2StoragePublicUrl(path: string) { return R2_STORAGE_PUBLIC_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+const r2Storage = {
+  from(_bucket: string) {
+    return {
+      async upload(path: string, body: BodyInit, options: any = {}) {
+        try {
+          if (!R2_STORAGE_SERVICE_TOKEN) return { data: null, error: { message: "Jeton serveur R2 indisponible." } };
+          const response = await fetch(r2StorageKeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_STORAGE_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+          if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
+          return { data: { path }, error: null };
+        } catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async download(path: string) {
+        try { const response = await fetch(r2StorageKeyUrl(path)); if (!response.ok) return { data: null, error: { message: "R2 download HTTP " + response.status } }; return { data: await response.blob(), error: null }; }
+        catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async createSignedUrl(path: string, _expiresIn?: number) { return { data: { signedUrl: r2StoragePublicUrl(path) }, error: null }; },
+      async createSignedUrls(paths: string[], _expiresIn?: number) { return { data: { signedUrls: paths.map(path => ({ path, signedUrl: r2StoragePublicUrl(path) })) }, error: null }; },
+      async createSignedUploadUrl(path: string) { return { data: { signedUrl: r2StorageKeyUrl(path), token: null, path }, error: null }; },
+      getPublicUrl(path: string) { return { data: { publicUrl: r2StoragePublicUrl(path) } }; }
+    };
+  }
+};
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const SR = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -534,7 +562,7 @@ async function make(d: any, auth: string) {
     qa.graphs_total++;
     if (graph?.geogebra_image_path) {
       try {
-        const dl = await admin.storage.from("Pdfs").download(graph.geogebra_image_path);
+        const dl = await r2Storage.from("Pdfs").download(graph.geogebra_image_path);
         if (dl.error || !dl.data) throw Error(dl.error?.message || "téléchargement échoué");
         const b = new Uint8Array(await dl.data.arrayBuffer());
         const im = await emb(pdf, b, graph.geogebra_image_path, "graph", gi);
@@ -651,12 +679,13 @@ async function make(d: any, auth: string) {
   stage("CONTENT_READY");
 
   if (Array.isArray(d.corrections) && d.corrections.length) {
-    ensure(36, 12);
-    p.drawText(contentProfile==="langues"?"ANSWERS":contentProfile==="francais_litterature"?"CORRIGÉS ET ANALYSE":"CORRIGÉS", { x: X, y: y - 4, font: bold, size: 16, color: dark });
-    y -= 36;
-    for (const c of d.corrections) {
-      await flow(`Corrigé — exercice ${c.exercise_number || ""}`, { color: dark, after: 5, bg: pale });
-      if (c.solution) await flow(String(c.solution));
+    for (let i = 0; i < d.corrections.length; i++) {
+      const c = d.corrections[i] || {};
+      next();
+      const correctionTitle = clean(c.correction_title) || `Corrigé de l'exercice ${c.exercise_number || i + 1}`;
+      p.drawText(correctionTitle, { x: X, y: y - 4, font: bold, size: 16, color: dark });
+      y -= 36;
+      if (c.solution) await flow(String(c.solution), { color: dark, after: 5, bg: pale });
       if (c.formula) await displayFormula(String(c.formula));
     }
   }
@@ -706,24 +735,24 @@ Deno.serve(async (req: Request) => {
   const id = Number(b?.generated_document_id);
   if (!Number.isSafeInteger(id) || id < 1) return json({ error: "generated_document_id obligatoire" }, 400);
   const { data: doc, error } = await admin.from("aurora_generated_documents").select("*").eq("id", id).eq("created_by", u.data.user.id).maybeSingle();
-  if (error || !doc) return json({ error: "Document généré introuvable" }, 404);
+  if (error || !doc) return json({ error: "Document généré introuvable" }, 404);const uidForAssets=u.data.user.id;const {data:activeProfile,error:profileError}=await admin.from("Profils").select("role,banni").eq("id",uidForAssets).maybeSingle();if(profileError||!activeProfile||activeProfile.banni===true)return json({ error:"Compte suspendu ou profil non autorisé" }, 403);const hasForeignGeoPath=(v:any):boolean=>{if(Array.isArray(v))return v.some(hasForeignGeoPath);if(!v||typeof v!=="object")return false;if(typeof v.geogebra_image_path==="string"&&v.geogebra_image_path.trim()&&!v.geogebra_image_path.startsWith(`aurora-content/${uidForAssets}/`))return true;return Object.values(v).some(hasForeignGeoPath);};if(hasForeignGeoPath(doc.content_json||{}))return json({ error:"Chemin GeoGebra non autorisé"},403);
   if (!["generated", "review", "approved"].includes(doc.status)) return json({ error: `Rendu impossible depuis ${doc.status}` }, 409);
   try {
     const r = await make({ ...(doc.content_json || {}), subject: doc.subject || undefined, level: doc.level || undefined, class_name: doc.class_name || undefined }, a);
     const path = `aurora-content/${u.data.user.id}/${doc.id}/v${doc.version || 1}-${slug(doc.title)}.pdf`;
     stage("STORAGE_UPLOAD_START");
-    const up = await admin.storage.from("Pdfs").upload(path, r.bytes, { contentType: "application/pdf", upsert: true });
+    const up = await r2Storage.from("Pdfs").upload(path, r.bytes, { contentType: "application/pdf", upsert: true });
     if (up.error) throw Error(`Storage: ${up.error.message}`);
-    const pub = admin.storage.from("Pdfs").getPublicUrl(path);
+    const signedPdf = await r2Storage.from("Pdfs").createSignedUrl(path, 60 * 60 * 24 * 30); if (signedPdf.error || !signedPdf.data?.signedUrl) throw Error(`URL PDF signée: ${signedPdf.error?.message || "URL absente"}`); const pdfUrl = signedPdf.data.signedUrl;
     const metadata = { ...(doc.metadata || {}), pdf_diagnostic: diagnostic, pdf_render: { engine: "pdf-lib+fontkit+NotoSans-v37-Wikimedia", generated_at: new Date().toISOString(), bytes: r.bytes.length, qa: r.qa, performance: "v37-wikimedia", visual_sources: r.qa?.visual_sources || [] } };
     const { error: ue } = await admin.from("aurora_generated_documents").update({
-      pdf_path: path, pdf_url: pub.data.publicUrl, metadata,
+      pdf_path: path, pdf_url: pdfUrl, metadata,
       validation_notes: `Renderer v37 + Wikimedia Commons: police Unicode Noto Sans + fontkit pour éviter les erreurs WinAnsi (≠, ≤, ≥, etc.), sans modifier le pipeline MathJax/LaTeX. Correctifs toTex() (LaTeX ne doit plus être corrompu par les anciennes heuristiques exp(/ln(/sqrt() et mise à l'échelle naturelle des formules inline (plus de hauteur cible forcée).`,
     }).eq("id", id);
     if (ue) throw Error(ue.message);
     stage("DATABASE_UPDATE_DONE");
     await persist(id);
-    return json({ ok: true, generated_document_id: id, pdf_path: path, pdf_url: pub.data.publicUrl, bytes: r.bytes.length, qa: r.qa, stage: "DATABASE_UPDATE_DONE" });
+    return json({ ok: true, generated_document_id: id, pdf_path: path, pdf_url: pdfUrl, bytes: r.bytes.length, qa: r.qa, stage: "DATABASE_UPDATE_DONE" });
   } catch (e) {
     console.error("[AURORA_PDF_ERROR]", stageNow, e);
     await persist(id);
