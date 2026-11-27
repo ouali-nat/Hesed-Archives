@@ -2,6 +2,29 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { PDFDocument, rgb } from "npm:pdf-lib@1.17.1";
 import fontkit from "npm:@pdf-lib/fontkit@1.1.1";
 
+
+const R2_STORAGE_WORKER_URL = "https://lsnb-pdf-worker-v2.oualikevin9.workers.dev";
+const R2_STORAGE_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
+const R2_STORAGE_SERVICE_TOKEN = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || (() => { try { return JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}").default || ""; } catch { return ""; } })();
+function r2StorageKeyUrl(path: string) { return R2_STORAGE_WORKER_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+function r2StoragePublicUrl(path: string) { return R2_STORAGE_PUBLIC_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+const r2Storage = { from(_bucket:string) {
+ return {
+  async upload(path:string,body:BodyInit,options:any={}) {
+   try { if(!R2_STORAGE_SERVICE_TOKEN)return {data:null,error:{message:"Jeton serveur R2 indisponible."}};
+    const response=await fetch(r2StorageKeyUrl(path),{method:"PUT",headers:{Authorization:"Bearer "+R2_STORAGE_SERVICE_TOKEN,"Content-Type":options.contentType||"application/octet-stream"},body});
+    if(!response.ok)return {data:null,error:{message:"R2 upload HTTP "+response.status+": "+(await response.text()).slice(0,500)}};
+    return {data:{path},error:null};
+   } catch(error){return {data:null,error:{message:error instanceof Error?error.message:String(error)}}}
+  },
+  async download(path:string) {
+   try {const response=await fetch(r2StorageKeyUrl(path));if(!response.ok)return {data:null,error:{message:"R2 download HTTP "+response.status}};return {data:await response.blob(),error:null}}
+   catch(error){return {data:null,error:{message:error instanceof Error?error.message:String(error)}}}
+  },
+  async createSignedUrl(path:string,_expiresIn?:number){return {data:{signedUrl:r2StoragePublicUrl(path)},error:null}},
+  getPublicUrl(path:string){return {data:{publicUrl:r2StoragePublicUrl(path)}}}
+ };
+}};
 const URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -233,9 +256,9 @@ async function fetchLogoBytes(){
   if(!logoUrl)throw new Error("La version PNG du logo pour les documents PDF n’est pas disponible. Réenregistrez le logo depuis Apparence.");
   if(LOGO_BYTES_URL!==logoUrl){LOGO_BYTES_URL=logoUrl;LOGO_BYTES_PROMISE=null;}
   if(!LOGO_BYTES_PROMISE)LOGO_BYTES_PROMISE=fetch(logoUrl,{cache:"no-store"}).then(async r=>{
-    if(!r.ok)throw new Error("Logo Hesed indisponible (HTTP "+r.status+").");
+    if(!r.ok)throw new Error("Logo Eneles indisponible (HTTP "+r.status+").");
     const bytes=new Uint8Array(await r.arrayBuffer());
-    if(bytes.length<8)throw new Error("La version PDF du logo Hesed est vide.");
+    if(bytes.length<8)throw new Error("La version PDF du logo Eneles est vide.");
     return bytes;
   });
   return LOGO_BYTES_PROMISE;
@@ -1009,7 +1032,7 @@ let childY=bodyY+bodyH;
         }else{
           const path=String(g?.geogebra_image_path||g?.graph_local_path||"").trim();
           if(path){
-            const dl=await admin.storage.from("Pdfs").download(path);
+            const dl=await r2Storage.from("Pdfs").download(path);
             if(!dl.error&&dl.data){
               const sourceBytes=new Uint8Array(await dl.data.arrayBuffer());
               qa.asset_bytes.geogebra_source_bytes+=sourceBytes.length;
@@ -1227,9 +1250,9 @@ let childY=bodyY+bodyH;
     const bytes=new Uint8Array(await pdf.save({useObjectStreams:true}));
     qa.asset_bytes.final_pdf_bytes=bytes.length;
     const path="aurora-content-pages/"+userId+"/"+id+"/page-"+String(pn).padStart(4,"0")+".pdf";
-    const up=await admin.storage.from("Pdfs").upload(path,bytes,{contentType:"application/pdf",upsert:true});
+    const up=await r2Storage.from("Pdfs").upload(path,bytes,{contentType:"application/pdf",upsert:true});
     if(up.error)return out({ok:false,generated_document_id:id,page_number:pn,error:up.error.message},500);
-    const signed=await admin.storage.from("Pdfs").createSignedUrl(path,60*60*24*7);
+    const signed=await r2Storage.from("Pdfs").createSignedUrl(path,60*60*24*7);
     if(signed.error)return out({ok:false,error:signed.error.message},500);
     const pageUrl=signed.data?.signedUrl||null;
     const md=docRes.data.metadata&&typeof docRes.data.metadata==="object"?docRes.data.metadata:{};
