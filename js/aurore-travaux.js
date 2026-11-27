@@ -480,15 +480,19 @@
     const uid = currentUserId();
     if (!uid) throw new Error('Connecte-toi pour ajouter une image.');
     const extension = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' })[file.type];
-    const path = uid + '/' + (state.privateDocumentId ? 'prive-' + state.privateDocumentId : state.documentId) + '/' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.' + extension;
+    const path = 'travaux-images/' + uid + '/' + (state.privateDocumentId ? 'prive-' + state.privateDocumentId : state.documentId) + '/' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.' + extension;
     const encodedPath = path.split('/').map(encodeURIComponent).join('/');
-    const response = await fetch(SUPABASE_URL + '/storage/v1/object/travaux-images/' + encodedPath, {
-      method: 'POST',
-      headers: apiHeaders({ 'Content-Type': file.type, 'x-upsert': 'false' }),
-      body: file
+    const base = String(R2_WORKER_URL || '').replace(/\/$/, '');
+    const publicBase = String(R2_PUBLIC_URL || '').replace(/\/$/, '');
+    if (!base || !publicBase) throw new Error('Le stockage Cloudflare R2 n’est pas configuré.');
+    const response = await fetch(base + '/' + encodedPath, {
+      method: 'PUT',
+      headers: apiHeaders({ 'Content-Type': file.type }),
+      body: file,
+      cache: 'no-store'
     });
-    if (!response.ok) throw new Error('Le téléversement de l’image a échoué (HTTP ' + response.status + ').');
-    return SUPABASE_URL + '/storage/v1/object/public/travaux-images/' + encodedPath;
+    if (!response.ok) throw new Error('Le téléversement de l’image vers R2 a échoué (HTTP ' + response.status + ').');
+    return publicBase + '/' + encodedPath;
   }
 
   async function publishDraft() {
