@@ -34,7 +34,7 @@ function signedSourcePath(raw) {
     throw new Error("Une page PDF ne provient pas du stockage Cloudflare R2 autorisé.");
   }
   let path;
-  try { path = decodeURIComponent(url.pathname.replace(/^\\/+/, "")); }
+  try { path = decodeURIComponent(url.pathname.startsWith("/") ? url.pathname.slice(1) : url.pathname); }
   catch { throw new Error("Le chemin R2 d’une page PDF est mal encodé."); }
   if (!path || path.includes("..") || path.includes("\\") || path.split("/").length !== 4) {
     throw new Error("Le chemin d’une page PDF est invalide.");
