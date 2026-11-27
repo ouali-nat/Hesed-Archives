@@ -673,7 +673,7 @@
   }
   function finalPdfArtifactDescription(artifact){
     const pages=Number(artifact?.pageCount)||0,size=formatPdfSize(artifact?.size),sources=Number(artifact?.fragmentBytes)||0;
-    return 'PDF complet fusionné et vérifié sur le serveur · '+pages+' page(s) · '+size+'. Les fragments sources ('+formatPdfSize(sources)+') restent sur Supabase pendant la fusion : ils ne sont plus téléchargés sur le téléphone pour cette étape.';
+    return 'PDF complet fusionné et vérifié sur le serveur · '+pages+' page(s) · '+size+'. Les fragments sources ('+formatPdfSize(sources)+') restent sur Cloudflare R2 pendant la fusion : ils ne sont plus téléchargés sur le téléphone pour cette étape.';
   }
   function finalPdfFingerprint(parts){
     const pages=state.canonicalPreview?.pages||{};
@@ -1000,7 +1000,7 @@
     if(!pageUrls.length)throw new Error('Aucune URL PDF n’a été transmise à la fusion. Vérifie les pages prêtes puis relance la fusion.');
     if(pageUrls.length!==parts.length)throw new Error('Une page du document ne possède pas d’URL PDF valide.');
     setPdfBatchProgress('Fusion des pages sur le serveur…',91);
-    setStatus('Fusion côté serveur : les fragments restent entre Supabase et le serveur de fusion. Aucune page ni moteur de compression n’est téléchargé sur le téléphone ; le PDF complet ne sera transféré qu’au moment du téléchargement.');
+    setStatus('Fusion côté serveur : les fragments restent dans Cloudflare R2 et sur le serveur de fusion. Aucune page ni moteur de compression n’est téléchargé sur le téléphone ; le PDF complet ne sera transféré qu’au moment du téléchargement.');
     const courseFingerprint=finalPdfFingerprint(parts);
     const send=async(accessToken)=>fetch('/api/aurora-assisted-pdf-finalize',{
       method:'POST',
@@ -1022,9 +1022,9 @@
     if(!pdfUrl)throw new Error('Le serveur n’a fourni aucun lien vers le PDF final.');
     let parsedUrl;
     try{parsedUrl=new URL(pdfUrl)}catch(_){throw new Error('Le lien du PDF final est invalide.')}
-    if(parsedUrl.origin!==new URL(SUPABASE_URL).origin
-      ||!parsedUrl.pathname.startsWith('/storage/v1/object/sign/Pdfs/aurora-assisted-final-pdfs/')){
-      throw new Error('Le serveur a renvoyé un lien PDF non autorisé.');
+    if(parsedUrl.origin!==new URL(R2_PUBLIC_URL).origin
+      ||!parsedUrl.pathname.startsWith('/aurora-assisted-final-pdfs/')){
+      throw new Error('Le serveur a renvoyé un lien PDF R2 non autorisé.');
     }
     const pageCount=Number(data.page_count)||0,size=Number(data.bytes)||0;
     if(pageCount<1||size<5)throw new Error('Le PDF final renvoyé par le serveur est vide ou incomplet.');
@@ -2592,10 +2592,10 @@
     const path=String(g.geogebra_image_path||g.graph_local_path||'').trim();
     if(!path)return null;
     if(/^https:\/\//i.test(path))return path;
-    const c=client();if(!c)return null;
     try{
-      const r=await c.storage.from('Pdfs').createSignedUrl(path,600);
-      return r.data?.signedUrl||null;
+      const base=String(R2_PUBLIC_URL||'').replace(/\/$/,'');
+      if(!base)return null;
+      return base+'/'+path.split('/').map(encodeURIComponent).join('/');
     }catch(_){return null}
   }
 
