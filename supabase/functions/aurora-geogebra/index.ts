@@ -1,6 +1,34 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+
+const R2_STORAGE_WORKER_URL = "https://lsnb-pdf-worker-v2.oualikevin9.workers.dev";
+const R2_STORAGE_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
+const R2_STORAGE_SERVICE_TOKEN = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || (() => { try { return JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}").default || ""; } catch { return ""; } })();
+function r2StorageKeyUrl(path: string) { return R2_STORAGE_WORKER_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+function r2StoragePublicUrl(path: string) { return R2_STORAGE_PUBLIC_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+const r2Storage = {
+  from(_bucket: string) {
+    return {
+      async upload(path: string, body: BodyInit, options: any = {}) {
+        try {
+          if (!R2_STORAGE_SERVICE_TOKEN) return { data: null, error: { message: "Jeton serveur R2 indisponible." } };
+          const response = await fetch(r2StorageKeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_STORAGE_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+          if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
+          return { data: { path }, error: null };
+        } catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async download(path: string) {
+        try { const response = await fetch(r2StorageKeyUrl(path)); if (!response.ok) return { data: null, error: { message: "R2 download HTTP " + response.status } }; return { data: await response.blob(), error: null }; }
+        catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async createSignedUrl(path: string, _expiresIn?: number) { return { data: { signedUrl: r2StoragePublicUrl(path) }, error: null }; },
+      async createSignedUrls(paths: string[], _expiresIn?: number) { return { data: { signedUrls: paths.map(path => ({ path, signedUrl: r2StoragePublicUrl(path) })) }, error: null }; },
+      async createSignedUploadUrl(path: string) { return { data: { signedUrl: r2StorageKeyUrl(path), token: null, path }, error: null }; },
+      getPublicUrl(path: string) { return { data: { publicUrl: r2StoragePublicUrl(path) } }; }
+    };
+  }
+};
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -164,7 +192,7 @@ Deno.serve(async req=>{
       if(bytes.length<8||bytes[0]!==137||bytes[1]!==80||bytes[2]!==78||bytes[3]!==71||bytes[4]!==13||bytes[5]!==10||bytes[6]!==26||bytes[7]!==10) return json({error:"Le fichier GeoGebra doit être un PNG valide"},400);
       const safeBlockId=blockId.replace(/[^A-Za-z0-9_-]/g,"-").slice(0,100)||"graph";
       const path="aurora-content/"+userId+"/assisted/"+courseId+"/blocks/"+safeBlockId+"/graph-"+Date.now()+".png";
-      const up=await admin.storage.from("Pdfs").upload(path,bytes,{contentType:"image/png",cacheControl:"31536000",upsert:false});
+      const up=await r2Storage.from("Pdfs").upload(path,bytes,{contentType:"image/png",cacheControl:"31536000",upsert:false});
       if(up.error) throw new Error("Storage GeoGebra: "+up.error.message);
       return json({ok:true,path,bytes:bytes.length,renderer_version:GEO_GEBRA_RENDERER_VERSION});
     }
@@ -269,7 +297,7 @@ Deno.serve(async req=>{
 
     const ownerPath=serverMode?"server":String(userId);
     const path="aurora-content/"+ownerPath+"/"+id+"/geogebra/graph-"+(index+1)+"-"+Date.now()+".png";
-    const up=await admin.storage.from("Pdfs").upload(path,bytes,{contentType:"image/png",cacheControl:"31536000",upsert:false});
+    const up=await r2Storage.from("Pdfs").upload(path,bytes,{contentType:"image/png",cacheControl:"31536000",upsert:false});
     if(up.error) throw new Error("Storage GeoGebra: "+up.error.message);
 
     const content=setGraphImage(doc.content_json,index,path);
@@ -278,7 +306,7 @@ Deno.serve(async req=>{
     if(userId && !isAdmin) updateQuery=updateQuery.eq("created_by",userId);
     const {error:ue}=await updateQuery;
     if(ue) throw new Error("Mise à jour du document: "+ue.message);
-    const pub=admin.storage.from("Pdfs").getPublicUrl(path);
+    const pub=r2Storage.from("Pdfs").getPublicUrl(path);
     return json({ok:true,generated_document_id:id,graph_index:index,path,url:pub.data.publicUrl,bytes:bytes.length,server_mode:serverMode});
   }catch(e){return json({error:e instanceof Error?e.message:String(e)},500)}
 });
