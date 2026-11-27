@@ -5,6 +5,34 @@ import fontkit from "npm:@pdf-lib/fontkit@1.1.1";
 
 // aurora-assisted-sheet — fiches de révision et scènes vectorielles pilotées par JSON.
 // Indépendante des autres renderers : aucune fonction existante n'est modifiée.
+
+const R2_STORAGE_WORKER_URL = "https://lsnb-pdf-worker-v2.oualikevin9.workers.dev";
+const R2_STORAGE_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
+const R2_STORAGE_SERVICE_TOKEN = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || (() => { try { return JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}").default || ""; } catch { return ""; } })();
+function r2StorageKeyUrl(path: string) { return R2_STORAGE_WORKER_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+function r2StoragePublicUrl(path: string) { return R2_STORAGE_PUBLIC_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+const r2Storage = {
+  from(_bucket: string) {
+    return {
+      async upload(path: string, body: BodyInit, options: any = {}) {
+        try {
+          if (!R2_STORAGE_SERVICE_TOKEN) return { data: null, error: { message: "Jeton serveur R2 indisponible." } };
+          const response = await fetch(r2StorageKeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_STORAGE_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+          if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
+          return { data: { path }, error: null };
+        } catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async download(path: string) {
+        try { const response = await fetch(r2StorageKeyUrl(path)); if (!response.ok) return { data: null, error: { message: "R2 download HTTP " + response.status } }; return { data: await response.blob(), error: null }; }
+        catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async createSignedUrl(path: string, _expiresIn?: number) { return { data: { signedUrl: r2StoragePublicUrl(path) }, error: null }; },
+      async createSignedUrls(paths: string[], _expiresIn?: number) { return { data: { signedUrls: paths.map(path => ({ path, signedUrl: r2StoragePublicUrl(path) })) }, error: null }; },
+      async createSignedUploadUrl(path: string) { return { data: { signedUrl: r2StorageKeyUrl(path), token: null, path }, error: null }; },
+      getPublicUrl(path: string) { return { data: { publicUrl: r2StoragePublicUrl(path) } }; }
+    };
+  }
+};
 const URL=Deno.env.get("SUPABASE_URL")!, SERVICE=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, ANON=Deno.env.get("SUPABASE_ANON_KEY")||"";
 const admin=createClient(URL,SERVICE,{auth:{autoRefreshToken:false,persistSession:false}});
 const LOGO_URL="https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev/site-logo-auraster";
@@ -40,7 +68,7 @@ async function logo(pdf:any){
   const b=await LOGO_CACHE;
   if(b[0]===137&&b[1]===80)return pdf.embedPng(b);
   if(b[0]===255&&b[1]===216)return pdf.embedJpg(b);
-  throw new Error("La version PDF du logo Hesed n’est pas une image PNG/JPEG valide.");
+  throw new Error("La version PDF du logo Eneles n’est pas une image PNG/JPEG valide.");
 }
 function wrap(font:any,s:string,size:number,max:number){
   const words=clean(s).split(" ").filter(Boolean),lines:string[]=[];let line="";
@@ -448,8 +476,8 @@ Deno.serve(async req=>{
     await update(id,{fast_page_progress:75,fast_page_stage:"PDF construit"});
     const bin=new Uint8Array(await pdf.save({useObjectStreams:true}));
     const path="aurora-assisted-sheet-pages/"+uid+"/"+id+"/"+kind+".pdf";
-    const up=await admin.storage.from("Pdfs").upload(path,bin,{contentType:"application/pdf",upsert:true});if(up.error)throw new Error(up.error.message);
-    const su=await admin.storage.from("Pdfs").createSignedUrl(path,604800);if(su.error)throw new Error(su.error.message);
+    const up=await r2Storage.from("Pdfs").upload(path,bin,{contentType:"application/pdf",upsert:true});if(up.error)throw new Error(up.error.message);
+    const su=await r2Storage.from("Pdfs").createSignedUrl(path,604800);if(su.error)throw new Error(su.error.message);
     const pdfUrl=su.data?.signedUrl||null;
     await admin.from("aurora_generated_documents").update({pdf_path:path,pdf_url:pdfUrl,updated_at:new Date().toISOString(),
       metadata:{...metadata,fast_page_pdf:true,fast_page_pdf_engine:"pdf-lib-sheet-v1",pdf_page_count:pages,fast_page_status:"completed",fast_page_progress:100,fast_page_stage:"Page PDF prête",fast_page_updated_at:new Date().toISOString(),fast_page_last_error:null}
