@@ -12,7 +12,7 @@ const r2Storage = {
   from(_bucket: string) {
     return {
       async upload(path: string, body: BodyInit, options: any = {}) {
-        const response = await fetch(r2StorageKeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_STORAGE_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+        const response = await fetch(r2StorageKeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_STORAGE_SERVICE_TOKEN, apikey: Deno.env.get("SUPABASE_ANON_KEY") || "", "Content-Type": options.contentType || "application/octet-stream" }, body });
         if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
         return { data: { path }, error: null };
       },
@@ -80,16 +80,15 @@ function storagePathFromSignedUrl(raw: unknown): string {
   } catch {
     throw new Error("Une page n’a pas d’URL PDF valide.");
   }
-  const expectedOrigin = new URL(SUPA_URL).origin;
-  const prefix = "/storage/v1/object/sign/Pdfs/";
-  if (parsed.origin !== expectedOrigin || !parsed.pathname.startsWith(prefix)) {
-    throw new Error("URL de fragment PDF externe ou non autorisée.");
+  const expectedOrigin = new URL(R2_STORAGE_PUBLIC_URL).origin;
+  if (parsed.protocol !== "https:" || parsed.origin !== expectedOrigin || parsed.search || parsed.hash || !parsed.pathname.startsWith("/")) {
+    throw new Error("URL de fragment PDF R2 externe ou non autorisée.");
   }
   let path = "";
   try {
-    path = decodeURIComponent(parsed.pathname.slice(prefix.length));
+    path = decodeURIComponent(parsed.pathname.slice(1));
   } catch {
-    throw new Error("URL de fragment PDF mal encodée.");
+    throw new Error("URL de fragment PDF R2 mal encodée.");
   }
   return path;
 }
@@ -187,7 +186,7 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: "Un fragment source est introuvable ou ne t’appartient pas." }, 403);
     }
 
-    // Chaque fragment de l’éditeur reste dans Supabase pour pouvoir être régénéré.
+    // Chaque fragment de l’éditeur reste dans Cloudflare R2 pour pouvoir être régénéré.
     // La fusion, en revanche, est rattachée au cours complet et produit un seul
     // document de contrôle humain dans Content Factory.
     const sourceCourseIds = [...new Set((documents || []).map((doc: any) => {
