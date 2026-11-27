@@ -2,6 +2,32 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { PDFDocument } from "npm:pdf-lib@1.17.1";
 
+
+const R2_STORAGE_WORKER_URL = "https://lsnb-pdf-worker-v2.oualikevin9.workers.dev";
+const R2_STORAGE_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
+const R2_STORAGE_SERVICE_TOKEN = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+function r2StorageKeyUrl(path: string) { return R2_STORAGE_WORKER_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+function r2StoragePublicUrl(path: string) { return R2_STORAGE_PUBLIC_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+const r2Storage = {
+  from(_bucket: string) {
+    return {
+      async upload(path: string, body: BodyInit, options: any = {}) {
+        const response = await fetch(r2StorageKeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_STORAGE_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+        if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
+        return { data: { path }, error: null };
+      },
+      async download(path: string) {
+        const response = await fetch(r2StorageKeyUrl(path));
+        if (!response.ok) return { data: null, error: { message: "R2 download HTTP " + response.status } };
+        return { data: await response.blob(), error: null };
+      },
+      async createSignedUrl(path: string, _expiresIn?: number) { return { data: { signedUrl: r2StoragePublicUrl(path) }, error: null }; },
+      async createSignedUrls(paths: string[], _expiresIn?: number) { return { data: paths.map(path => ({ path, signedUrl: r2StoragePublicUrl(path), error: null })), error: null }; },
+      async createSignedUploadUrl(path: string) { return { data: { signedUrl: r2StorageKeyUrl(path), token: null, path }, error: null }; },
+      getPublicUrl(path: string) { return { data: { publicUrl: r2StoragePublicUrl(path) } }; }
+    };
+  }
+};
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -211,7 +237,7 @@ Deno.serve(async (req: Request) => {
       const sourceUrls: string[] = [];
       for (let offset = 0; offset < paths.length; offset += 50) {
         const batchPaths = paths.slice(offset, offset + 50);
-        const { data: signedBatch, error: sourceSignError } = await admin.storage
+        const { data: signedBatch, error: sourceSignError } = await r2Storage
           .from("Pdfs")
           .createSignedUrls(batchPaths, 2 * 60 * 60);
         if (sourceSignError || !signedBatch || signedBatch.length !== batchPaths.length) {
@@ -222,31 +248,18 @@ Deno.serve(async (req: Request) => {
           if (item.error || !item.signedUrl) {
             throw new Error("Impossible de signer le fragment " + (offset + i + 1) + " : " + String(item.error || "URL absente"));
           }
-          const sourceUrl = new URL(item.signedUrl, SUPA_URL);
-          if (sourceUrl.origin !== new URL(SUPA_URL).origin
-            || !sourceUrl.pathname.startsWith("/storage/v1/object/sign/Pdfs/")) {
-            throw new Error("Supabase a fourni un lien source non autorisé.");
+          const expectedSourceUrl = r2StoragePublicUrl(batchPaths[i]);
+          if (item.signedUrl !== expectedSourceUrl) {
+            throw new Error("R2 a fourni un lien source non autorisé.");
           }
-          sourceUrls.push(sourceUrl.toString());
+          sourceUrls.push(expectedSourceUrl);
         }
       }
 
-      const { data: upload, error: uploadError } = await admin.storage
-        .from("Pdfs")
-        .createSignedUploadUrl(finalPath, { upsert: true });
-      if (uploadError || !upload?.signedUrl) {
-        throw new Error("Création du lien de dépôt serveur impossible : " + (uploadError?.message || "URL absente"));
-      }
-      const uploadUrl = new URL(upload.signedUrl, SUPA_URL);
-      const expectedOrigin = new URL(SUPA_URL).origin;
-      if (uploadUrl.origin !== expectedOrigin) {
-        throw new Error("Le stockage a renvoyé un lien de dépôt externe non autorisé.");
-      }
-      if (uploadUrl.pathname.startsWith("/object/upload/sign/")) {
-        uploadUrl.pathname = "/storage/v1" + uploadUrl.pathname;
-      }
-      if (!uploadUrl.pathname.startsWith("/storage/v1/object/upload/sign/Pdfs/aurora-assisted-final-pdfs/")) {
-        throw new Error("Le lien de dépôt ne cible pas le dossier final autorisé.");
+      const uploadUrl = new URL(r2StorageKeyUrl(finalPath));
+      if (uploadUrl.origin !== new URL(R2_STORAGE_WORKER_URL).origin
+        || !uploadUrl.pathname.startsWith("/aurora-assisted-final-pdfs/")) {
+        throw new Error("Le lien de dépôt R2 ne cible pas le dossier final autorisé.");
       }
       return json({
         ok: true,
@@ -269,17 +282,13 @@ Deno.serve(async (req: Request) => {
         return json({ ok: false, error: "Le nombre de pages du PDF final est invalide." }, 400);
       }
       const filename = fingerprint + ".pdf";
-      const { data: storedFiles, error: listError } = await admin.storage
-        .from("Pdfs")
-        .list("aurora-assisted-final-pdfs/" + userId, { limit: 100, search: filename });
-      if (listError) throw new Error("Vérification du PDF déposé impossible : " + listError.message);
-      const stored = (storedFiles || []).find((item: any) => item.name === filename);
-      if (!stored) return json({ ok: false, error: "Le serveur n’a pas confirmé l’enregistrement du PDF final." }, 409);
-      const storedSize = Number(stored.metadata?.size) || Number(body?.bytes) || 0;
+      const verification = await fetch(r2StorageKeyUrl(finalPath), { method: "HEAD" });
+      if (!verification.ok) return json({ ok: false, error: "R2 n’a pas confirmé l’enregistrement du PDF final." }, 409);
+      const storedSize = Number(verification.headers.get("Content-Length")) || Number(body?.bytes) || 0;
       if (storedSize < 5 || storedSize > 60 * 1024 * 1024) {
         return json({ ok: false, error: "La taille du PDF final enregistré est invalide.", bytes: storedSize }, 413);
       }
-      const { data: signed, error: signedError } = await admin.storage
+      const { data: signed, error: signedError } = await r2Storage
         .from("Pdfs")
         .createSignedUrl(finalPath, 60 * 60 * 24 * 30);
       if (signedError || !signed?.signedUrl) {
@@ -505,7 +514,7 @@ Deno.serve(async (req: Request) => {
 
     for (let index = 0; index < paths.length; index++) {
       const path = paths[index];
-      const { data, error } = await admin.storage.from("Pdfs").download(path);
+      const { data, error } = await r2Storage.from("Pdfs").download(path);
       if (error || !data) throw new Error("Page " + (index + 1) + " introuvable : " + (error?.message || "fichier absent"));
       const bytes = new Uint8Array(await data.arrayBuffer());
       if (bytes.length < 5 || new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") {
@@ -529,13 +538,13 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: "PDF final supérieur à 60 Mo : le document reste disponible par fragments.", bytes: finalBytes.length }, 413);
     }
 
-    const { error: uploadError } = await admin.storage.from("Pdfs").upload(finalPath, finalBytes, {
+    const { error: uploadError } = await r2Storage.from("Pdfs").upload(finalPath, finalBytes, {
       contentType: "application/pdf",
       cacheControl: "3600",
       upsert: true,
     });
     if (uploadError) throw new Error("Enregistrement du PDF final impossible : " + uploadError.message);
-    const { data: signed, error: signedError } = await admin.storage.from("Pdfs").createSignedUrl(finalPath, 60 * 60 * 24 * 30);
+    const { data: signed, error: signedError } = await r2Storage.from("Pdfs").createSignedUrl(finalPath, 60 * 60 * 24 * 30);
     if (signedError || !signed?.signedUrl) throw new Error("Création du lien PDF final impossible : " + (signedError?.message || "URL absente"));
 
     return json({
