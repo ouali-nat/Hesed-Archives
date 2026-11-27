@@ -3,6 +3,34 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { PDFDocument, rgb } from "npm:pdf-lib@1.17.1";
 import fontkit from "npm:@pdf-lib/fontkit@1.1.1";
 
+
+const R2_WORKER_URL = "https://lsnb-pdf-worker-v2.oualikevin9.workers.dev";
+const R2_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
+const R2_SERVICE_TOKEN = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || (() => { try { return JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}").default || ""; } catch { return ""; } })();
+function r2KeyUrl(path: string) { return R2_WORKER_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+function r2PublicUrl(path: string) { return R2_PUBLIC_URL + "/" + String(path).split("/").map(encodeURIComponent).join("/"); }
+const r2Storage = {
+  from(_bucket: string) {
+    return {
+      async upload(path: string, body: BodyInit, options: any = {}) {
+        try {
+          if (!R2_SERVICE_TOKEN) return { data: null, error: { message: "Jeton serveur R2 indisponible." } };
+          const response = await fetch(r2KeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+          if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
+          return { data: { path }, error: null };
+        } catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async download(path: string) {
+        try { const response = await fetch(r2KeyUrl(path)); if (!response.ok) return { data: null, error: { message: "R2 download HTTP " + response.status } }; return { data: await response.blob(), error: null }; }
+        catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
+      },
+      async createSignedUrl(path: string, _expiresIn?: number) { return { data: { signedUrl: r2PublicUrl(path) }, error: null }; },
+      async createSignedUrls(paths: string[], _expiresIn?: number) { return { data: { signedUrls: paths.map(path => ({ path, signedUrl: r2PublicUrl(path) })) }, error: null }; },
+      async createSignedUploadUrl(path: string) { return { data: { signedUrl: r2KeyUrl(path), token: null, path }, error: null }; },
+      getPublicUrl(path: string) { return { data: { publicUrl: r2PublicUrl(path) } }; }
+    };
+  }
+};
 const URL=Deno.env.get("SUPABASE_URL")!, ANON=Deno.env.get("SUPABASE_ANON_KEY")!, SERVICE=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const admin=createClient(URL,SERVICE,{auth:{autoRefreshToken:false,persistSession:false}});
 const MATH=`${URL}/functions/v1/aurora-content-math-renderer`;
@@ -89,7 +117,7 @@ Deno.serve(async req=>{
   }
   for(const g of Array.isArray(input.graphs)?input.graphs:[]){
    qa.graphs_total++;
-   if(g?.geogebra_image_path){const graphPath=String(g.geogebra_image_path);if(!graphPath.startsWith(`aurora-content/${assetOwnerId}/`))return json({ok:false,error:"Chemin GeoGebra non autorisé"},403);const dl=await admin.storage.from("Pdfs").download(graphPath);if(!dl.error&&dl.data){const q=new Uint8Array(await dl.data.arrayBuffer());qa.asset_bytes.geogebra_source_bytes+=q.length;let im:any;if(q[0]===137&&q[1]===80)im=await pdf.embedPng(q);else if(q[0]===255&&q[1]===216)im=await pdf.embedJpg(q);if(im){let w=Math.min(450,im.width),h=w*im.height/im.width;if(h>260){h=260;w=h*im.width/im.height}ensure(h+28);p.drawImage(im,{x:X+(W-w)/2,y:y-h,width:w,height:h});y-=h+20;qa.graphs_ok++;}}}
+   if(g?.geogebra_image_path){const graphPath=String(g.geogebra_image_path);if(!graphPath.startsWith(`aurora-content/${assetOwnerId}/`))return json({ok:false,error:"Chemin GeoGebra non autorisé"},403);const dl=await r2Storage.from("Pdfs").download(graphPath);if(!dl.error&&dl.data){const q=new Uint8Array(await dl.data.arrayBuffer());qa.asset_bytes.geogebra_source_bytes+=q.length;let im:any;if(q[0]===137&&q[1]===80)im=await pdf.embedPng(q);else if(q[0]===255&&q[1]===216)im=await pdf.embedJpg(q);if(im){let w=Math.min(450,im.width),h=w*im.height/im.width;if(h>260){h=260;w=h*im.width/im.height}ensure(h+28);p.drawImage(im,{x:X+(W-w)/2,y:y-h,width:w,height:h});y-=h+20;qa.graphs_ok++;}}}
    if(qa.graphs_ok<qa.graphs_total){qa.graphs_failed++}
   }
   qa.asset_bytes.total_source_bytes=qa.asset_bytes.font_source_bytes+qa.asset_bytes.logo_source_bytes+qa.asset_bytes.formula_png_source_bytes+qa.asset_bytes.formula_vector_pdf_source_bytes+qa.asset_bytes.image_source_bytes+qa.asset_bytes.geogebra_source_bytes;
@@ -97,8 +125,8 @@ Deno.serve(async req=>{
   const out=new Uint8Array(await pdf.save({useObjectStreams:true}));
   qa.asset_bytes.final_pdf_bytes=out.length;
   const expectedPath=`aurora-content-pages/${us.data.user.id}/${id}/page-${String(pn).padStart(4,"0")}.pdf`;const path=String(b?.page_path||expectedPath);if(path!==expectedPath)return json({ok:false,error:"Chemin de page non autorisé"},403);if(out.length>40*1024*1024)return json({ok:false,error:"PDF trop volumineux (maximum 40 Mo)"},413);
-  const up=await admin.storage.from("Pdfs").upload(path,out,{contentType:"application/pdf",upsert:true});if(up.error)return json({ok:false,error:up.error.message},500);
-  const signed=await admin.storage.from("Pdfs").createSignedUrl(path,60*60*24*7);
+  const up=await r2Storage.from("Pdfs").upload(path,out,{contentType:"application/pdf",upsert:true});if(up.error)return json({ok:false,error:up.error.message},500);
+  const signed=await r2Storage.from("Pdfs").createSignedUrl(path,60*60*24*7);
   if(signed.error)return json({ok:false,error:signed.error.message},500);
   return json({ok:true,generated_document_id:id,page_number:pn,page_path:path,page_url:signed.data?.signedUrl||null,bytes:out.length,size_mib:Number((out.length/1048576).toFixed(2)),target_max_bytes:4*1024*1024,within_4_mib:out.length<=4*1024*1024,asset_breakdown:qa.asset_bytes,qa,engine:"pdf-lib+fontkit+Tinos+MathJax-vector-page-v5"});
  }catch(e){return json({ok:false,generated_document_id:id,page_number:pn,error:e instanceof Error?e.message:String(e)},500)}
