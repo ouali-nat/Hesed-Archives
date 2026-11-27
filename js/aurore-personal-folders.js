@@ -208,7 +208,7 @@ async function supprimerObjetR2Personnel(fichierUrl){
   const key=value.slice(prefix.length).split('?')[0];
   if(!key)throw new Error('CLE_STOCKAGE_PERSONNEL_ABSENTE');
   const route=key.split('/').map(encodeURIComponent).join('/');
-  const response=await fetch(R2_WORKER_URL+'/'+route,{method:'DELETE',headers:{Accept:'application/json',Authorization:'Bearer '+String(session?.access_token||'')}});
+  const response=await fetch(R2_WORKER_URL+'/'+route,{method:'DELETE',headers:{Accept:'application/json',Authorization:'Bearer '+String(session?.access_token||''),apikey:SUPABASE_ANON_KEY}});
   const result=await response.json().catch(()=>null);
   if(!response.ok||(result&&result.ok===false))throw new Error('SUPPRESSION_R2_HTTP_'+response.status);
   return true;
@@ -223,7 +223,7 @@ async function uploaderDocumentPrive(fichier,titre,caseId){
   // La base réserve les octets avant l'envoi R2 ; le trigger sérialise les dépôts de chaque compte.
   const raw=await api(PRIVATE_TABLE,{method:'POST',headers:{Prefer:'return=representation'},body:{user_id:uid(),case_id:caseId,titre:String(titre||fichier.name||'Document').trim().slice(0,150),fichier_url:url,taille_octets:fichier.size||0,type_fichier:fichier.type||'application/pdf'}});
   const rows=raw?JSON.parse(raw):[];if(!rows[0])throw new Error('ENREGISTREMENT_ECHEC');const created=rows[0];
-  try{const up=await fetch(R2_WORKER_URL+'/'+nomPropre,{method:'PUT',headers:{'Content-Type':'application/pdf',Authorization:'Bearer '+String(session?.access_token||'')},body:fichier});if(!up.ok)throw new Error('STOCKAGE_HTTP_'+up.status);}
+  try{const up=await fetch(R2_WORKER_URL+'/'+nomPropre,{method:'PUT',headers:{'Content-Type':'application/pdf',Authorization:'Bearer '+String(session?.access_token||''),apikey:SUPABASE_ANON_KEY},body:fichier});if(!up.ok)throw new Error('STOCKAGE_HTTP_'+up.status);}
   catch(error){try{await supprimerObjetR2Personnel(url);}catch(cleanupError){console.warn('[Cases] nettoyage R2 après échec du dépôt:',cleanupError);}try{await api(PRIVATE_TABLE,{method:'DELETE',query:'id=eq.'+encodeURIComponent(created.id)+'&user_id=eq.'+encodeURIComponent(uid()),headers:{Prefer:'return=minimal'}});}catch(cleanupError){console.error('[Cases] libération quota impossible:',cleanupError);}throw error;}
   const doc=normP([created])[0];privateDocs=[...privateDocs,doc];write(pk(),privateDocs);try{await actualiserUtilisationStockage(true);}catch(statsError){console.warn('[Stockage personnel] actualisation après dépôt:',statsError);storageUsageCache={documents_count:privateDocs.length,bytes_used:privateDocs.reduce((sum,item)=>sum+(Number(item.taille_octets)||0),0),storage_limit_bytes:STORAGE_LIMIT_BYTES};storageUsageAt=Date.now();storageUsageUserId=uid();actualiserAffichageStockage();}return doc;
 }
