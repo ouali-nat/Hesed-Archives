@@ -13,7 +13,7 @@ const r2Storage = {
       async upload(path: string, body: BodyInit, options: any = {}) {
         try {
           if (!R2_SERVICE_TOKEN) return { data: null, error: { message: "Jeton serveur R2 indisponible." } };
-          const response = await fetch(r2KeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_SERVICE_TOKEN, "Content-Type": options.contentType || "application/octet-stream" }, body });
+          const response = await fetch(r2KeyUrl(path), { method: "PUT", headers: { Authorization: "Bearer " + R2_SERVICE_TOKEN, apikey: Deno.env.get("SUPABASE_ANON_KEY") || "", "Content-Type": options.contentType || "application/octet-stream" }, body });
           if (!response.ok) return { data: null, error: { message: "R2 upload HTTP " + response.status + ": " + (await response.text()).slice(0, 500) } };
           return { data: { path }, error: null };
         } catch (error) { return { data: null, error: { message: error instanceof Error ? error.message : String(error) } }; }
