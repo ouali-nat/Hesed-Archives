@@ -2,6 +2,7 @@ const { PDFDocument } = require("pdf-lib");
 const { createHash } = require("node:crypto");
 
 const SUPABASE_URL = "https://tdeotqfsbvouresfhkab.supabase.co";
+const R2_PUBLIC_URL = "https://pub-0433751d08eb49fcafb7355ef0bf42ab.r2.dev";
 const EDGE_FUNCTION_URL = SUPABASE_URL + "/functions/v1/aurora-assisted-pdf-finalize";
 const MAX_FRAGMENTS = 200;
 const MAX_SOURCE_BYTES = 180 * 1024 * 1024;
@@ -29,14 +30,12 @@ function signedSourcePath(raw) {
   } catch {
     throw new Error("Une page ne possède pas une URL PDF valide.");
   }
-  if (url.protocol !== "https:" || url.origin !== new URL(SUPABASE_URL).origin) {
-    throw new Error("Une page PDF provient d’un serveur non autorisé.");
+  if (url.protocol !== "https:" || url.origin !== new URL(R2_PUBLIC_URL).origin || url.search || url.hash) {
+    throw new Error("Une page PDF ne provient pas du stockage Cloudflare R2 autorisé.");
   }
-  const prefix = "/storage/v1/object/sign/Pdfs/";
-  if (!url.pathname.startsWith(prefix)) throw new Error("Une page PDF n’est pas un lien signé du bucket autorisé.");
   let path;
-  try { path = decodeURIComponent(url.pathname.slice(prefix.length)); }
-  catch { throw new Error("Le chemin d’une page PDF est mal encodé."); }
+  try { path = decodeURIComponent(url.pathname.replace(/^\\/+/, "")); }
+  catch { throw new Error("Le chemin R2 d’une page PDF est mal encodé."); }
   if (!path || path.includes("..") || path.includes("\\") || path.split("/").length !== 4) {
     throw new Error("Le chemin d’une page PDF est invalide.");
   }
@@ -270,7 +269,7 @@ module.exports = async function handler(req, res) {
       || !Array.isArray(prepared.source_urls)
       || prepared.source_urls.length !== prepared.paths.length
       || !prepared.upload_url || !prepared.pdf_path) {
-      throw new Error("Supabase n’a pas fourni les autorisations de dépôt et les liens source attendus.");
+      throw new Error("Cloudflare R2 n’a pas fourni les autorisations de dépôt et les liens source attendus.");
     }
     const orderedUrls = prepared.source_urls.map((rawUrl, index) => {
       const url = String(rawUrl || "");
@@ -319,6 +318,7 @@ module.exports = async function handler(req, res) {
       headers: {
         "Content-Type": "application/pdf",
         "Authorization": "Bearer " + token,
+        "apikey": apikey,
         "Cache-Control": "max-age=3600",
         "x-upsert": "true",
       },
