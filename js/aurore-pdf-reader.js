@@ -183,7 +183,7 @@
     if(!doc||doc.id==null||!doc.Fichier_url)return;
     const id=String(doc.id);
     const a=auroreLirePDFRecents().filter(x=>String(x.id)!==id);
-    a.unshift({id:doc.id,Titre:doc.Titre||'Document',Auteur:doc.Auteur||'',Fichier_url:doc.Fichier_url,'Catégorie':doc['Catégorie']||'',Niveau:doc.Niveau||'',Classe:doc.Classe||'',Filiere:doc.Filiere||'','Matière':doc['Matière']||'',Genre:doc.Genre||'',Telechargement_autorise:doc.Telechargement_autorise!==false});
+    a.unshift({id:doc.id,Titre:doc.Titre||'Document',Auteur:doc.Auteur||'',Fichier_url:doc.Fichier_url,privateDocumentId:doc.privateDocumentId||null,'Catégorie':doc['Catégorie']||'',Niveau:doc.Niveau||'',Classe:doc.Classe||'',Filiere:doc.Filiere||'','Matière':doc['Matière']||'',Genre:doc.Genre||'',Telechargement_autorise:doc.Telechargement_autorise!==false});
     auroreEcrirePDFRecents(a);
     auroreRendrePDFRecents();
   }
@@ -407,8 +407,10 @@
 
           let dernierLoaded = 0;
           let dernierTemps = performance.now();
+          const headersPrives = doc?.privateDocumentId ? { Authorization: 'Bearer ' + String(session?.access_token || ''), apikey: SUPABASE_ANON_KEY } : undefined;
           const loadingTask = pdfjsLib.getDocument({
             url: source,
+            httpHeaders: headersPrives,
             stopAtErrors: false,
             disableStream: false,
             disableAutoFetch: true,
@@ -460,7 +462,7 @@
         // Secours : la visionneuse native peut afficher directement le fichier
         // sans recopier tout le document dans la mémoire JavaScript.
         diagLog('→ PDF.js/Range indisponible : ouverture native directe du PDF.');
-        if (afficherVisionneuseNativePDF(doc.Fichier_url)) { enregistrerVueDocument(doc); return; }
+        if (!doc.privateDocumentId && afficherVisionneuseNativePDF(doc.Fichier_url)) { enregistrerVueDocument(doc); return; }
         throw derniereErreur || new Error('Impossible d’ouvrir le flux PDF.');
       }
 
@@ -907,6 +909,8 @@ async function telechargerDocumentAvecProgression(doc, mode=null, rangeStart=nul
 
       if (!octets) {
         const source = String(doc.Fichier_url);
+        const headersPrives = doc?.privateDocumentId ? { Authorization: 'Bearer ' + String(session?.access_token || ''), apikey: SUPABASE_ANON_KEY } : undefined;
+        const optionsPrives = signal ? {signal,cache:'no-store',...(headersPrives?{headers:headersPrives}:{})} : {cache:'no-store',...(headersPrives?{headers:headersPrives}:{})};
         const cle = source.indexOf(R2_PUBLIC_URL + '/') === 0
           ? source.slice(R2_PUBLIC_URL.length + 1)
           : null;
@@ -915,14 +919,14 @@ async function telechargerDocumentAvecProgression(doc, mode=null, rangeStart=nul
         if (cle) {
           try {
             const workerUrl = `${R2_WORKER_URL}/${cle}?download=1&filename=${encodeURIComponent(nomFichierTelechargementDepuisDocument(doc))}`;
-            res = await fetch(workerUrl, signal ? {signal,cache:'no-store'} : {cache:'no-store'});
+            res = await fetch(workerUrl, optionsPrives);
           } catch (e) {
             if (e?.name === 'AbortError') throw e;
           }
         }
         if (!res || !res.ok) {
           try {
-            res = await fetch(source, signal ? {signal,cache:'no-store'} : {cache:'no-store'});
+            res = await fetch(source, optionsPrives);
           } catch (e) {
             if (e?.name === 'AbortError') throw e;
           }
