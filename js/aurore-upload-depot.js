@@ -211,6 +211,7 @@
       xhr.open('PUT', url, true);
       if (!session?.access_token) return reject(new Error('Session expirée : reconnecte-toi avant le dépôt.'));
       xhr.setRequestHeader('Authorization', 'Bearer ' + session.access_token);
+      xhr.setRequestHeader('apikey', SUPABASE_ANON_KEY);
       if (contentType) xhr.setRequestHeader('Content-Type', contentType);
 
       const pousser = (loaded, total, force = false) => {
@@ -400,7 +401,7 @@
       setEtatConnexion?.('connexion');
       const create = await fetch(base + '?action=mpu-create', {
         method:'POST',
-        headers:{'Content-Type':'application/pdf','Authorization':'Bearer '+String(session?.access_token||'')},
+        headers:{'Content-Type':'application/pdf','Authorization':'Bearer '+String(session?.access_token||''),'apikey':SUPABASE_ANON_KEY},
         signal:controller.signal,
         cache:'no-store'
       });
@@ -441,7 +442,7 @@
 
       const complete = await fetch(base + '?action=mpu-complete&uploadId=' + encodeURIComponent(uploadId), {
         method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+String(session?.access_token||'')},
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+String(session?.access_token||''),'apikey':SUPABASE_ANON_KEY},
         body:JSON.stringify({parts}),
         signal:controller.signal,
         cache:'no-store'
@@ -453,7 +454,7 @@
     } catch(e) {
       annule = annule || e?.name === 'AbortError';
       if (uploadId) {
-        try { await fetch(base + '?action=mpu-abort&uploadId=' + encodeURIComponent(uploadId), {method:'POST',headers:{'Authorization':'Bearer '+String(session?.access_token||'')},cache:'no-store'}); } catch(ignore) {}
+        try { await fetch(base + '?action=mpu-abort&uploadId=' + encodeURIComponent(uploadId), {method:'POST',headers:{'Authorization':'Bearer '+String(session?.access_token||''),'apikey':SUPABASE_ANON_KEY},cache:'no-store'}); } catch(ignore) {}
       }
       if (annule) throw new DOMException('Upload annulé','AbortError');
       throw e;
@@ -472,6 +473,7 @@
       xhr.open('PUT', url, true);
       if (!session?.access_token) return reject(new Error('Session expirée : reconnecte-toi avant le dépôt.'));
       xhr.setRequestHeader('Authorization', 'Bearer ' + session.access_token);
+      xhr.setRequestHeader('apikey', SUPABASE_ANON_KEY);
       xhr.setRequestHeader('Content-Type', 'application/pdf');
 
       const taille = Math.max(0, Number(fichier.size) || 0);
