@@ -202,7 +202,7 @@ async function recupererDocsDesCases(ids){
 }
 
 async function supprimerObjetR2Personnel(fichierUrl){
-  const base=String(R2_PUBLIC_URL||'');const prefix=base.endsWith('/')?base:base+'/';
+  const base=String(R2_WORKER_URL||'');const prefix=base.endsWith('/')?base:base+'/';
   const value=String(fichierUrl||'');
   if(!prefix||!value.startsWith(prefix))throw new Error('URL_STOCKAGE_PERSONNEL_INVALIDE');
   const key=value.slice(prefix.length).split('?')[0];
@@ -219,7 +219,7 @@ async function uploaderDocumentPrive(fichier,titre,caseId){
   const estPdf=fichier.type==='application/pdf'||/\.pdf$/i.test(fichier.name||'');if(!estPdf)throw new Error('FORMAT_INVALIDE');
   if(fichier.size>PRIVE_TAILLE_MAX)throw new Error('FICHIER_TROP_LOURD');
   const usage=await actualiserUtilisationStockage(true),remaining=Math.max(0,(usage.storage_limit_bytes||STORAGE_LIMIT_BYTES)-(usage.bytes_used||0));if(fichier.size>remaining)throw new Error('QUOTA_STOCKAGE_DEPASSE');
-  const nomPropre='perso_'+uid()+'_'+Date.now()+'_'+String(fichier.name||'document.pdf').replace(/[^a-zA-Z0-9._-]/g,'_'),url=R2_PUBLIC_URL+'/'+nomPropre;
+  const nomPropre='perso_'+uid()+'_'+Date.now()+'_'+String(fichier.name||'document.pdf').replace(/[^a-zA-Z0-9._-]/g,'_'),url=R2_WORKER_URL+'/'+nomPropre;
   // La base réserve les octets avant l'envoi R2 ; le trigger sérialise les dépôts de chaque compte.
   const raw=await api(PRIVATE_TABLE,{method:'POST',headers:{Prefer:'return=representation'},body:{user_id:uid(),case_id:caseId,titre:String(titre||fichier.name||'Document').trim().slice(0,150),fichier_url:url,taille_octets:fichier.size||0,type_fichier:fichier.type||'application/pdf'}});
   const rows=raw?JSON.parse(raw):[];if(!rows[0])throw new Error('ENREGISTREMENT_ECHEC');const created=rows[0];
